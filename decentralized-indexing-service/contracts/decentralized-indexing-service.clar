@@ -145,3 +145,117 @@
     (ok true)
 )
 )
+
+;; Resolve Challenge
+(define-public (resolve-challenge 
+  (challenger principal)
+  (challenged-node principal)
+  (challenge-block uint)
+  (is-valid bool)
+)
+  (let (
+    (challenge-info (unwrap! 
+      (map-get? NodeChallenges 
+        { 
+          challenger: challenger, 
+          challenged-node: challenged-node,
+          challenge-block: challenge-block 
+        }
+      ) 
+      ERR_INVALID_CHALLENGE
+    ))
+    (node-info (unwrap! (map-get? IndexingNodes { node-address: challenged-node }) ERR_INVALID_NODE))
+    (resolver tx-sender)
+  )
+    ;; Ensure challenge is not already resolved
+    (asserts! (not (get resolved challenge-info)) ERR_INVALID_CHALLENGE)
+    
+    ;; Ensure challenge is within resolution period
+    (asserts! (<= (- stacks-block-height challenge-block) CHALLENGE_PERIOD) ERR_INVALID_CHALLENGE)
+    
+    ;; Resolve challenge
+    (if is-valid
+      ;; Challenge proven - slash node
+      (begin
+        (map-set IndexingNodes 
+          { node-address: challenged-node }
+          (merge node-info {
+            reputation-score: (/ (get reputation-score node-info) u2), ;; Halve reputation
+            active: (if (< (get reputation-score node-info) u1000) false true)
+          })
+        )
+        ;; Reward challenger
+        (try! (as-contract (stx-transfer? (get challenge-stake challenge-info) tx-sender challenger)))
+      )
+      ;; Challenge invalid - punish challenger
+      (begin
+        ;; Slash challenger's stake
+        (try! (as-contract (stx-transfer? (get challenge-stake challenge-info) tx-sender challenged-node)))
+      )
+    )
+    
+    ;; Mark challenge as resolved
+    (map-set NodeChallenges
+      { 
+        challenger: challenger, 
+        challenged-node: challenged-node,
+        challenge-block: challenge-block 
+      }
+      (merge challenge-info { resolved: true })
+    )
+    
+    (ok true)
+)
+)
+
+;; Read-only Functions
+(define-read-only (get-node-info (node principal))
+  (map-get? IndexingNodes { node-address: node })
+)
+
+(define-read-only (get-network-stats)
+  {
+    total-nodes: (var-get total-nodes),
+    total-staked-amount: (var-get total-staked-amount),
+    total-queries-processed: (var-get total-queries-processed),
+    total-data-indexed: (var-get total-data-indexed)
+  }
+)
+
+(define-read-only (get-network-parameter (param-key (string-ascii 32)))
+  (map-get? NetworkParameters { param-key: param-key })
+)
+
+;; Error Codes for new features
+(define-constant ERR_DELEGATION_LIMIT_REACHED (err u111))
+(define-constant ERR_INVALID_DELEGATION (err u112))
+(define-constant ERR_REWARD_CLAIM_FAILED (err u113))
+(define-constant ERR_INVALID_REWARD_PERIOD (err u114))
+(define-constant ERR_ALREADY_VOTED (err u115))
+(define-constant ERR_PROPOSAL_EXPIRED (err u116))
+(define-constant ERR_PROPOSAL_NOT_ACTIVE (err u117))
+(define-constant ERR_INVALID_DATA_FEED (err u118))
+(define-constant ERR_FEED_EXISTS (err u119))
+(define-constant ERR_INSUFFICIENT_PERMISSIONS (err u120))
+
+;; Constants for new features
+(define-constant MAX_DELEGATIONS_PER_NODE u10)
+(define-constant REWARD_CLAIM_PERIOD u720) ;; Approximately 5 days
+(define-constant PROPOSAL_VOTING_PERIOD u4320) ;; Approximately 30 days
+(define-constant MIN_VOTES_FOR_PROPOSAL u100)
+(define-constant DATA_FEED_EXPIRY_PERIOD u1440) ;; 10 days
+(define-constant SUBNET_CREATION_FEE u50000)
+
+
+(define-map StakeDelegations
+  {
+    delegator: principal,
+    node: principal
+  }
+  {
+    amount: uint,
+    start-block: uint,
+    last-reward-block: uint,
+    commission-rate: uint
+  }
+)
